@@ -9,12 +9,11 @@ import matplotlib.pyplot as plt
 from PIL import Image
 
 #Define variables. In this case, the API key.
-BOT_TOKEN = "1967125017:AAEUZWU_WiVifoR_z68ciM8SWkY40ARuqJU"
 BOT_INTERVAL = 0.1
 BOT_TIMEOUT = 3
 
 #Generate new bot instance
-bot = tb.TeleBot(BOT_TOKEN)
+bot = tb.TeleBot(process.env.BOT_TOKEN)
 actions = ["/start","/help"]
 
 #The start and help functions help the user understand the functionality of the bot
