@@ -8,3 +8,4 @@ yfinance==0.2.26
 urllib3>=2.6.3
 cryptography>=46.0.5
 fonttools>=4.60.2
+requests>=2.33.0
