@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 from PIL import Image
 import os
 from dotenv import load_dotenv
+from groq import Groq
+import json
 
 load_dotenv()
 
@@ -19,6 +21,11 @@ BOT_TIMEOUT = 3
 #Generate new bot instance
 bot = tb.TeleBot(os.getenv("BOT_TOKEN"))
 actions = ["/start","/help"]
+
+#Generate new OpenAI instance
+client = Groq(
+    api_key=os.environ.get("GROQ_API_KEY"),
+)
 
 #The start and help functions help the user understand the functionality of the bot
 @bot.message_handler(commands=["help"])
@@ -32,7 +39,9 @@ def help(message):
 
     bot.send_message(message.chat.id,"You can use the following buttons on your stock:", reply_markup=help_markup())
 
-    requests = {"All":"This returns all the data available on the particular stock on Yahoo Finance.",
+    requests = {
+        "Analyze":"This returns runs through an LLM to analyze the stock.",
+        "All":"This returns all the data available on the particular stock on Yahoo Finance.",
         "Financials":"This returns the financial data of the stock.",
         "B-Sheet":"This returns the balance sheet data for the stock.",
         "Cashflow":"This returns the cashflow data of the given the stock.",
@@ -83,7 +92,7 @@ def exit_stock(message):
 
 def markup(ticker_symbol):
     markup = types.ReplyKeyboardMarkup()
-    markup.row(f'All {ticker_symbol}')
+    markup.row(f'All {ticker_symbol}', f'Analyze {ticker_symbol}')
     markup.row(f'Financials {ticker_symbol}', f'B-Sheet {ticker_symbol}', f'Cashflow {ticker_symbol}')
     markup.row(f'Dividends {ticker_symbol}',f'Revenue {ticker_symbol}',f'Earnings {ticker_symbol}')
     markup.row(f'Price {ticker_symbol}',f'PB {ticker_symbol}',f'PE {ticker_symbol}', f'Sustainability {ticker_symbol}')
@@ -134,6 +143,32 @@ def remove_zeros(value):
     elif len(reverse_value) >= 13:
         reverse_value = float(round(value/1000000000000,2))
         return str(reverse_value)+" Trillion"
+
+def analyze_request(message):
+    request = message.text.split()
+    if len(request) < 2 or request[0].lower() not in "analyze":
+        return False
+    else:
+        return True
+
+#Requesting data using text
+@bot.message_handler(func=analyze_request)
+def send_analyze_data(message):
+    ticker_symbol = message.text.split()[1].upper()
+    ticker_data = yf.Ticker(ticker_symbol).info
+    print(json.dumps(ticker_data, indent=4))
+    # response = client.responses.create(input="Please look through the latest available stock, price and corporate information and provide a professional fundamenntal analysis that is easy to read and use by non-financial users for the company with stock ticket: " + ticker_symbol, model="openai/gpt-oss-20b")
+    chat_completion = client.chat.completions.create(
+    messages=[
+        {
+            "role": "user",
+            "content": "Please limit your response to 4000  characters - be smart about this, do not add formatting characters for headers, start output from the overview, no filler words and only mention the company name once.  Use paragraphs for neat formatting. Please look through the latest available stock, price and corporate information and provide a professional fundamenntal analysis that is easy to read and use by non-financial users for the company: " + ticker_data["shortName"] + " with stock ticker as per Yahoo Finance: " + ticker_symbol + ". Conclude with buy/sell and indicate degree (strong etc) as per industry standards.",
+        }
+    ],
+    model="llama-3.3-70b-versatile",
+    )
+
+    bot.send_message(message.chat.id, chat_completion.choices[0].message.content, disable_notification=False, reply_markup=markup(ticker_symbol))
 
 #Custom function for the  handler to parse through the user request
 def all_request(message):
