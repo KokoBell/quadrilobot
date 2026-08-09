@@ -5,7 +5,7 @@ pandas==2.0.2
 Pillow==12.3.0
 telebot==0.0.5
 yfinance==0.2.26
-urllib3>=2.6.3
+urllib3>=2.7.0
 cryptography>=46.0.5
 fonttools>=4.60.2
 requests>=2.33.0
