@@ -7,13 +7,17 @@ import yfinance as yf
 from time import sleep
 import matplotlib.pyplot as plt
 from PIL import Image
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 #Define variables. In this case, the API key.
 BOT_INTERVAL = 0.1
 BOT_TIMEOUT = 3
 
 #Generate new bot instance
-bot = tb.TeleBot(process.env.BOT_TOKEN)
+bot = tb.TeleBot(os.getenv("BOT_TOKEN"))
 actions = ["/start","/help"]
 
 #The start and help functions help the user understand the functionality of the bot
@@ -108,8 +112,13 @@ def formatter(currency,value):
             return "R"+str(remove_zeros(value))
         else:
             return "-R"+str(remove_zeros(-1*value))
+    elif currency == "EUR":
+        if value >= 0:
+            return "€"+str(remove_zeros(value))
+        else:
+            return "-€"+str(remove_zeros(-1*value))
     else:
-        return str(value)
+        return str(remove_zeros(value))
 
 def remove_zeros(value):
     reverse_value = str(value)
@@ -139,7 +148,7 @@ def all_request(message):
 def send_all_data(message):
     ticker_symbol = message.text.split()[1].upper()
     ticker_data = yf.Ticker(ticker_symbol).info
-    if ticker_data["regularMarketPrice"] != None and ticker_data["logo_url"] != "":
+    if ticker_data["regularMarketPrice"] != None:
         response = f"All the data for {ticker_symbol}: \n"
         bot.send_message(message.chat.id, response)
 
@@ -332,7 +341,7 @@ def send_revenue(message):
     ticker_symbol = message.text.split()[1].upper()
     ticker = yf.Ticker(ticker_symbol)
     ticker_data = ticker.info
-    if ticker_data["regularMarketPrice"] != None and ticker_data["logo_url"] != "":
+    if ticker_data["regularMarketPrice"] != None:
         response = f"Here is the revenue information for {ticker_symbol}: "
         bot.send_message(message.chat.id,response)
         currency = ticker_data["financialCurrency"]
@@ -360,7 +369,7 @@ def send_financials(message):
     ticker_data = ticker.info
     ticker_finance = ticker.financials
 
-    if ticker_data["regularMarketPrice"] != None and ticker_data["logo_url"] != "":
+    if ticker_data["regularMarketPrice"] != None:
         response = f"Here is the financial statement information for {ticker_symbol}: "
         bot.send_message(message.chat.id,response)
         currency = ticker_data["financialCurrency"]
@@ -389,7 +398,7 @@ def send_balance_sheet(message):
     ticker_data = ticker.info
     ticker_balance = ticker.balance_sheet
 
-    if ticker_data["regularMarketPrice"] != None and ticker_data["logo_url"] != "":
+    if ticker_data["regularMarketPrice"] != None:
         currency = ticker_data["financialCurrency"]
         response = f"Here is the balancesheet data for {ticker_symbol}: "
         bot.send_message(message.chat.id,response)
@@ -418,7 +427,7 @@ def send_cashflow(message):
     ticker_data = ticker.info
     ticker_cashflow = ticker.cashflow
 
-    if ticker_data["regularMarketPrice"] != None and ticker_data["logo_url"] != "":
+    if ticker_data["regularMarketPrice"] != None:
         response = f"Here is the cashflow information for {ticker_symbol}: "
         bot.send_message(message.chat.id,response)
         for i in ticker_cashflow.index:
@@ -447,7 +456,7 @@ def send_sustainability(message):
     ticker_data = ticker.info
     ticker_sustainability = ticker.sustainability
 
-    if ticker_data["regularMarketPrice"] != None and ticker_data["logo_url"] != "":
+    if ticker_data["regularMarketPrice"] != None:
         if str(type(ticker_sustainability)) != "<class 'NoneType'>":
             response = f"Here is the sustainability data for {ticker_symbol}: "
             bot.send_message(message.chat.id,response)
