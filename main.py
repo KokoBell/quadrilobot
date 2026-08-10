@@ -14,6 +14,9 @@ import json
 
 load_dotenv()
 
+# Track active analysis sessions for follow-ups (chat history context)
+active_analyses = {}
+
 #Define variables. In this case, the API key.
 BOT_INTERVAL = 0.1
 BOT_TIMEOUT = 3
@@ -144,6 +147,72 @@ def remove_zeros(value):
         reverse_value = float(round(value/1000000000000,2))
         return str(reverse_value)+" Trillion"
 
+def handle_follow_up(message):
+    bot.send_chat_action(message.chat.id, "typing")
+    chat_id = message.chat.id
+    user_text = message.text.strip()
+
+    # Check for exit command
+    if user_text.lower().startswith("exit") or user_text.lower() == "/start":
+        if chat_id in active_analyses:
+            del active_analyses[chat_id]
+        # start(message)
+        return
+
+    if chat_id not in active_analyses:
+        # Fallback if session expired or wasn't initialized
+        bot.send_message(chat_id, "Session expired. Please select 'Analyze' again or choose a command.")
+        return
+
+    session = active_analyses[chat_id]
+    ticker_symbol = session["ticker"]
+    messages = session["messages"]
+
+    # Append user's follow-up question
+    messages.append({"role": "user", "content": user_text + "For this output, please make the length of the output appropriate for the question. Questions that require short answers should be answered in short answers. Questions that require long answers should be answered in long answers. Please do not make the output too long or too short. Please make the output appropriate for the question."})
+
+    try:
+        chat_completion = client.chat.completions.create(
+            messages=messages,
+            model="llama-3.3-70b-versatile",
+        )
+        full_response = chat_completion.choices[0].message.content
+        
+        # Append assistant's reply to history
+        messages.append({"role": "assistant", "content": full_response})
+
+        response_chunks = split_text(full_response, max_length=600)
+        for i, chunk in enumerate(response_chunks):
+            # current_markup = markup(ticker_symbol) if i == len(response_chunks) - 1 else None
+            sent_msg = bot.send_message(
+                chat_id, 
+                chunk, 
+                disable_notification=False,
+                # reply_markup=current_markup
+            )
+            
+            # Keep listening for the next follow-up question on the final chunk
+            if i == len(response_chunks) - 1:
+                bot.register_next_step_handler(sent_msg, handle_follow_up)
+
+    except Exception as e:
+        print(f"Error during follow-up analysis for {ticker_symbol}: {e}")
+        bot.send_message(chat_id, "An error occurred while processing your question. Please try again:" + str(e))
+        bot.register_next_step_handler(message, handle_follow_up)
+
+# Function to split text into chunks of maximum length without breaking words abruptly
+def split_text(text, max_length=4000):
+    chunks = []
+    while len(text) > max_length:
+        # Find the last space within the limit to avoid cutting words
+        split_index = text.rfind(' ', 0, max_length)
+        if split_index == -1:
+            split_index = max_length
+        chunks.append(text[:split_index])
+        text = text[split_index:].lstrip()
+    chunks.append(text)
+    return chunks
+
 def analyze_request(message):
     request = message.text.split()
     if len(request) < 2 or request[0].lower() not in "analyze":
@@ -154,21 +223,65 @@ def analyze_request(message):
 #Requesting data using text
 @bot.message_handler(func=analyze_request)
 def send_analyze_data(message):
+    bot.send_chat_action(message.chat.id, "typing")
+
     ticker_symbol = message.text.split()[1].upper()
     ticker_data = yf.Ticker(ticker_symbol).info
-    print(json.dumps(ticker_data, indent=4))
+
+    if "shortName" not in ticker_data or ticker_data["regularMarketPrice"] is None:
+        bot.send_message(message.chat.id, "Uh oh! It seems like that ticker was incorrect or data is unavailable.")
+        return
+
+    bot.send_chat_action(message.chat.id, "typing")
+    print("Analysis in progress...", ticker_symbol)
+    # print(json.dumps(ticker_data, indent=4))
     # response = client.responses.create(input="Please look through the latest available stock, price and corporate information and provide a professional fundamenntal analysis that is easy to read and use by non-financial users for the company with stock ticket: " + ticker_symbol, model="openai/gpt-oss-20b")
-    chat_completion = client.chat.completions.create(
-    messages=[
+    try:
+        initial_prompt = "Your name is Quadrilobot. Indicate when non-finance questions are asked and politely decline. Use paragraphs for neat formatting, do not use asterixes for emphasis or formatting. You are welcome to use any telegram friendly text formatting. Please look through the latest available stock, price and corporate information and provide a professional fundamental analysis, including the numbers from the balance sheet, cash flow statement and financial statements. The report should be easy to read and use by non-financial. The company to analyze is: " + ticker_data["shortName"] + " with stock ticker as per Yahoo Finance: " + ticker_symbol + "."
+
+        chat_completion = client.chat.completions.create(
+        messages=[
         {
             "role": "user",
-            "content": "Please limit your response to 4000  characters - be smart about this, do not add formatting characters for headers, start output from the overview, no filler words and only mention the company name once.  Use paragraphs for neat formatting. Please look through the latest available stock, price and corporate information and provide a professional fundamenntal analysis that is easy to read and use by non-financial users for the company: " + ticker_data["shortName"] + " with stock ticker as per Yahoo Finance: " + ticker_symbol + ". Conclude with buy/sell and indicate degree (strong etc) as per industry standards.",
+            "content": initial_prompt,
         }
-    ],
-    model="llama-3.3-70b-versatile",
-    )
+        ],
+        model="llama-3.3-70b-versatile",
+        )
 
-    bot.send_message(message.chat.id, chat_completion.choices[0].message.content, disable_notification=False, reply_markup=markup(ticker_symbol))
+        messages = [{"role": "user", "content": initial_prompt}]
+
+        full_response = chat_completion.choices[0].message.content
+
+        # Append assistant's response to maintain conversation history
+        messages.append({"role": "assistant", "content": full_response})
+
+        # Save session state for this chat
+        active_analyses[message.chat.id] = {
+        "ticker": ticker_symbol,
+        "messages": messages
+        }
+
+        # Send messages in chunks
+        response_chunks = split_text(full_response, max_length=4000)
+
+        for i, chunk in enumerate(response_chunks):
+            # Attach the markup only to the last message
+            # current_markup = markup(ticker_symbol) if i == len(response_chunks) - 1 else None
+    
+            sent_msg = bot.send_message(
+            message.chat.id, 
+            chunk, 
+            disable_notification=False, 
+            reply_markup=None  # current_markup
+            )
+
+        # Register the follow-up handler on the last chunk message
+            if i == len(response_chunks) - 1:
+                bot.register_next_step_handler(sent_msg, handle_follow_up)
+    except Exception as e:
+        bot.send_message(message.chat.id, "An error occurred while processing your analysis request. Please try again: " + str(e))
+        print("Error during analysis:", e)
 
 #Custom function for the  handler to parse through the user request
 def all_request(message):
@@ -181,6 +294,7 @@ def all_request(message):
 #Requesting data using text
 @bot.message_handler(func=all_request)
 def send_all_data(message):
+    bot.send_chat_action(message.chat.id, "typing")
     ticker_symbol = message.text.split()[1].upper()
     ticker_data = yf.Ticker(ticker_symbol).info
     if ticker_data["regularMarketPrice"] != None:
@@ -206,6 +320,7 @@ def dividend_request(message):
 
 @bot.message_handler(func=dividend_request)
 def send_dividends(message):
+    bot.send_chat_action(message.chat.id, "typing")
     ticker_symbol = message.text.split()[1].upper()
     dividend_data = yf.Ticker(ticker_symbol).dividends.reset_index()
     limit = 10
@@ -268,6 +383,7 @@ def earnings_request(message):
 #Requesting data using text
 @bot.message_handler(func=earnings_request)
 def send_earnings(message):    
+    bot.send_chat_action(message.chat.id, "typing")
     ticker_symbol = message.text.split()[1].upper()
     calender_data = yf.Ticker(ticker_symbol).calendar.reset_index()
     val,index = validator(calender_data)
@@ -294,6 +410,7 @@ def pe_request(message):
 
 @bot.message_handler(func=pe_request)
 def send_pe(message):
+    bot.send_chat_action(message.chat.id, "typing")
     ticker_symbol = message.text.split()[1].upper()
     ticker_data = yf.Ticker(ticker_symbol).info
     response = ""
@@ -314,6 +431,7 @@ def pb_request(message):
 
 @bot.message_handler(func=pb_request)
 def send_pb(message):
+    bot.send_chat_action(message.chat.id, "typing")
     ticker_symbol = message.text.split()[1].upper()
     ticker_data = yf.Ticker(ticker_symbol).info
     response = ""
@@ -334,6 +452,7 @@ def price_request(message):
 
 @bot.message_handler(func=price_request)
 def send_price(message):
+    bot.send_chat_action(message.chat.id, "typing")
     ticker_symbol = message.text.split()[1].upper()
     ticker = yf.Ticker(ticker_symbol)
     ticker_data = ticker.info
@@ -373,6 +492,7 @@ def revenue_request(message):
 
 @bot.message_handler(func=revenue_request)
 def send_revenue(message):
+    bot.send_chat_action(message.chat.id, "typing")
     ticker_symbol = message.text.split()[1].upper()
     ticker = yf.Ticker(ticker_symbol)
     ticker_data = ticker.info
@@ -399,6 +519,7 @@ def financials_request(message):
 
 @bot.message_handler(func=financials_request)
 def send_financials(message):
+    bot.send_chat_action(message.chat.id, "typing")
     ticker_symbol = message.text.split()[1].upper()
     ticker = yf.Ticker(ticker_symbol)
     ticker_data = ticker.info
@@ -428,6 +549,7 @@ def balance_request(message):
 
 @bot.message_handler(func=balance_request)
 def send_balance_sheet(message):
+    bot.send_chat_action(message.chat.id, "typing")
     ticker_symbol = message.text.split()[1].upper()
     ticker = yf.Ticker(ticker_symbol)
     ticker_data = ticker.info
@@ -457,6 +579,7 @@ def cashflow_request(message):
 
 @bot.message_handler(func=cashflow_request)
 def send_cashflow(message):
+    bot.send_chat_action(message.chat.id, "typing")
     ticker_symbol = message.text.split()[1].upper()
     ticker = yf.Ticker(ticker_symbol)
     ticker_data = ticker.info
@@ -486,6 +609,7 @@ def sustainability_request(message):
 
 @bot.message_handler(func=sustainability_request)
 def send_sustainability(message):
+    bot.send_chat_action(message.chat.id, "typing")
     ticker_symbol = message.text.split()[1].upper()
     ticker = yf.Ticker(ticker_symbol)
     ticker_data = ticker.info
