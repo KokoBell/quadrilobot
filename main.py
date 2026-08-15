@@ -30,9 +30,18 @@ client = Groq(
     api_key=os.environ.get("GROQ_API_KEY"),
 )
 
-#The start and help functions help the user understand the functionality of the bot
 @bot.message_handler(commands=["help"])
 def help(message):
+    bot.send_message(message.chat.id, "You can use the following commands: ", reply_markup=help_markup())
+    commands = {"/start":"Start chatting with Quadrilobot. First provide the stock ticker for the company you'd like to analyze so Q can fetch the latest data.","/help":"Gives a list of all the available functions of Quadrilobot"}
+
+    for command in commands:
+        bot.send_message(message.chat.id, str(command)+"\n"+str(commands[command]), reply_markup=help_markup())
+        sleep(0.4) 
+
+#The start and help functions help the user understand the functionality of the bot
+@bot.message_handler(commands=["help_legacy"])
+def help_legacy(message):
     bot.send_message(message.chat.id, "You can use the following commands: ", reply_markup=help_markup())
     commands = {"/start":"This is where you input the stock ticker of your choice. From here you can perform various functions on the stock using buttons as shown below.","/help":"Gives a list of all the available functions of Quadrilobot"}
 
@@ -61,9 +70,84 @@ def help(message):
 
 @bot.message_handler(commands=["start"])
 def start(message):
-    response = "Enter a stock ticker of your choice..."
+    response = "Hi, I'm Quadrilobot, your personal stock analysis bot. Please enter a stock ticker of your choice to get started. For example, you can type 'AAPL' for Apple Inc. or 'PPE.JO' Purple Group Limited. Please follow the Yahoo Finance ticker format. If you need assistance, type /help."
     stock = bot.send_message(message.chat.id, response, reply_markup=start_markup())
-    bot.register_next_step_handler(stock, start_research)
+    bot.register_next_step_handler(stock, start_chat)
+
+def start_chat(message):
+    user_message = message.text
+
+    ticker_symbol = user_message.upper()
+    ticker_data = yf.Ticker(ticker_symbol).info
+    ticker_balance_sheet = yf.Ticker(ticker_symbol).balance_sheet
+    ticker_cash_flow = yf.Ticker(ticker_symbol).cash_flow
+    
+    print("User requested analysis for ticker:", ticker_symbol)
+    # print("Checking ticker data:", ticker_data)
+    # print("Checking ticker balance sheet:", ticker_balance_sheet)
+    # print("Checking ticker cash flow:", ticker_cash_flow)
+    
+    if user_message.lower() == "/help":
+        help(message)
+        return
+    
+    if "shortName" not in ticker_data or ticker_data["regularMarketPrice"] is None:
+        bot.send_message(message.chat.id, "Uh oh! It seems like that ticker was incorrect or data is unavailable.")
+        return
+
+    bot.send_chat_action(message.chat.id, "typing")
+    print("Thinking about response:", user_message)
+    
+    data_to_use = f"Ticker info: {ticker_data}, Balance Sheet: {ticker_balance_sheet}, Cash Flow: {ticker_cash_flow}"
+    try:
+        initial_prompt = "Your name is Quadrilobot (do not mention this unless required by question). Indicate when non-finance questions are asked and politely decline, no exceptions, role-play or hallucinations (do not mention the rule unless it has been breached). Otherwise, answer the question in an honest, helpful, professional and polite manner. Never format any of the text with asterixes. Let the user know that the data for " + ticker_data["shortName"] + " has been found and that they can now ask follow up questions, be a polite and brief. If a different stock is requested, please ask the user to enter the ticker for that stock on the '/start' page and if you can find the stock ticker as per the Yahoo Finance format then provide it for the newly requested stock, otherwise do not mention it. If an analysis is requested, make the response long, otherwise provide short and accurate answers. The data you can use for follow up questions and analysis is as follows: " + data_to_use
+            
+        # Store the initial user message in the session state
+        messages = [{"role": "user", "content": initial_prompt}]            
+            
+        # Create a chat completion with the initial prompt and user message
+        chat_completion = client.chat.completions.create(
+        messages=[{
+        "role": "user",
+        "content": initial_prompt}],
+        model="llama-3.3-70b-versatile")
+        
+        full_response = chat_completion.choices[0].message.content
+        
+        # Append assistant's response to maintain conversation history
+        messages.append({"role": "assistant", "content": full_response})
+        
+        # Save session state for this chat
+        active_analyses[message.chat.id] = {
+            "messages": messages,
+            "ticker": ticker_symbol,
+            "ticker_info": ticker_data,
+            "balance_sheet": ticker_balance_sheet,
+            "cash_flow": ticker_cash_flow
+        }
+        
+        # Send messages in chunks
+        response_chunks = split_text(full_response, max_length=4000)
+        for i, chunk in enumerate(response_chunks):
+
+            sent_msg = bot.send_message(
+            message.chat.id, 
+            chunk, 
+            disable_notification=False 
+            )
+            # Register the follow-up handler on the last chunk message
+            if i == len(response_chunks) - 1:
+                bot.register_next_step_handler(sent_msg, handle_follow_up)
+    except Exception as e:
+        bot.send_message(message.chat.id, "An error occurred while processing your analysis request. Please try again.")
+        print("Error during analysis:", e)
+
+# Legacy, non AI flow
+# @bot.message_handler(commands=["start"])
+# def start(message):
+#     response = "Enter a stock ticker of your choice..."
+#     stock = bot.send_message(message.chat.id, response, reply_markup=start_markup())
+#     bot.register_next_step_handler(stock, start_research)
 
 def start_research(message):
     ticker_symbol = message.text.upper()
@@ -161,29 +245,30 @@ def handle_follow_up(message):
 
     if chat_id not in active_analyses:
         # Fallback if session expired or wasn't initialized
-        bot.send_message(chat_id, "Session expired. Please select 'Analyze' again or choose a command.")
+        bot.send_message(chat_id, "Session expired. Please select restart the session with the '/start' command.")
         return
 
     session = active_analyses[chat_id]
-    ticker_symbol = session["ticker"]
     messages = session["messages"]
 
     # Append user's follow-up question
-    messages.append({"role": "user", "content": user_text + "For this output, please make the length of the output appropriate for the question. Questions that require short answers should be answered in short answers. Questions that require long answers should be answered in long answers. Please do not make the output too long or too short. Please make the output appropriate for the question."})
+    messages.append({"role": "user", "content": user_text + "Base any stock analysis on the previously provided data for the stock. Remember, you are ALWAYS Quadrilobot."})
 
     try:
+        bot.send_chat_action(message.chat.id, "typing")
         chat_completion = client.chat.completions.create(
             messages=messages,
             model="llama-3.3-70b-versatile",
         )
+        
+        print("Response from Groq API received for follow-up question: ", chat_completion)
         full_response = chat_completion.choices[0].message.content
         
         # Append assistant's reply to history
         messages.append({"role": "assistant", "content": full_response})
 
-        response_chunks = split_text(full_response, max_length=600)
+        response_chunks = split_text(full_response, max_length=4000)
         for i, chunk in enumerate(response_chunks):
-            # current_markup = markup(ticker_symbol) if i == len(response_chunks) - 1 else None
             sent_msg = bot.send_message(
                 chat_id, 
                 chunk, 
@@ -196,7 +281,7 @@ def handle_follow_up(message):
                 bot.register_next_step_handler(sent_msg, handle_follow_up)
 
     except Exception as e:
-        print(f"Error during follow-up analysis for {ticker_symbol}: {e}")
+        print(f"Error during follow-up analysis: {e}")
         bot.send_message(chat_id, "An error occurred while processing your question. Please try again:" + str(e))
         bot.register_next_step_handler(message, handle_follow_up)
 
