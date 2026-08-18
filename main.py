@@ -110,7 +110,7 @@ def start_chat(message):
         messages=[{
         "role": "user",
         "content": initial_prompt}],
-        model="llama-3.3-70b-versatile")
+        model="openai/gpt-oss-120b")
         
         full_response = chat_completion.choices[0].message.content
         
@@ -258,7 +258,7 @@ def handle_follow_up(message):
         bot.send_chat_action(message.chat.id, "typing")
         chat_completion = client.chat.completions.create(
             messages=messages,
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
         )
         
         print("Response from Groq API received for follow-up question: ", chat_completion)
@@ -331,7 +331,7 @@ def send_analyze_data(message):
             "content": initial_prompt,
         }
         ],
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         )
 
         messages = [{"role": "user", "content": initial_prompt}]
