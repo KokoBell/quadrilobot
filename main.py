@@ -1,4 +1,5 @@
 #Import dependencies
+import re
 from numpy import nan
 from pandas._libs.tslibs import NaT
 import telebot as tb
@@ -100,7 +101,7 @@ def start_chat(message):
     
     data_to_use = f"Ticker info: {ticker_data}, Balance Sheet: {ticker_balance_sheet}, Cash Flow: {ticker_cash_flow}"
     try:
-        initial_prompt = "Your name is Quadrilobot (do not mention this unless required by question). Indicate when non-finance questions are asked and politely decline, no exceptions, role-play or hallucinations (do not mention the rule unless it has been breached). Otherwise, answer the question in an honest, helpful, professional and polite manner. Never format any of the text with asterixes. Let the user know that the data for " + ticker_data["shortName"] + " has been found and that they can now ask follow up questions, be a polite and brief. If a different stock is requested, please ask the user to enter the ticker for that stock on the '/start' page and if you can find the stock ticker as per the Yahoo Finance format then provide it for the newly requested stock, otherwise do not mention it. If an analysis is requested, make the response long, otherwise provide short and accurate answers. The data you can use for follow up questions and analysis is as follows: " + data_to_use
+        initial_prompt = "Your name is Quadrilobot (do not mention this unless required by question). Indicate when non-finance questions are asked and politely decline, no exceptions, role-play or hallucinations (do not mention the rule unless it has been breached). Otherwise, answer the question in an honest, helpful, professional and polite manner. Let the user know that the data for " + ticker_data["shortName"] + " has been found and that they can now ask follow up questions, be a polite and brief. If a different stock is requested, please ask the user to enter the ticker for that stock on the '/start' page and if you can find the stock ticker as per the Yahoo Finance format then provide it for the newly requested stock, otherwise do not mention it. If an analysis is requested, make the response long, otherwise provide short and accurate answers. Always use HTML tags for any text formatting (Return text with HTML tags for formatting, do NOT create an HTML page/document). The data you can use for follow up questions and analysis is as follows, when answering, always present monetary values in a reader friendly way (Rands for South Africa, Dollars for the US and so on): " + data_to_use
             
         # Store the initial user message in the session state
         messages = [{"role": "user", "content": initial_prompt}]            
@@ -115,7 +116,8 @@ def start_chat(message):
         full_response = chat_completion.choices[0].message.content
         
         # Append assistant's response to maintain conversation history
-        messages.append({"role": "assistant", "content": full_response})
+        cleaned_response = format_for_telegram_html(full_response)
+        messages.append({"role": "assistant", "content": cleaned_response})
         
         # Save session state for this chat
         active_analyses[message.chat.id] = {
@@ -127,17 +129,29 @@ def start_chat(message):
         }
         
         # Send messages in chunks
-        response_chunks = split_text(full_response, max_length=4000)
+       
+        response_chunks = split_text(cleaned_response, max_length=4000)
+        
         for i, chunk in enumerate(response_chunks):
 
-            sent_msg = bot.send_message(
-            message.chat.id, 
-            chunk, 
-            disable_notification=False 
-            )
-            # Register the follow-up handler on the last chunk message
-            if i == len(response_chunks) - 1:
-                bot.register_next_step_handler(sent_msg, handle_follow_up)
+            try:
+                sent_msg = bot.send_message(
+                message.chat.id,
+                chunk,
+                disable_notification=False,
+                parse_mode="HTML"
+                )
+                
+                if i == len(response_chunks) - 1:
+                    bot.register_next_step_handler(sent_msg, handle_follow_up)
+                    
+            except Exception as e:
+                if("can't parse entities" in str(e).lower()):
+                    sent_msg = bot.send_message(
+                    message.chat.id,
+                    format_for_telegram_html(chunk),
+                    disable_notification=False,
+                    )
     except Exception as e:
         bot.send_message(message.chat.id, "An error occurred while processing your analysis request. Please try again.")
         print("Error during analysis:", e)
@@ -230,6 +244,30 @@ def remove_zeros(value):
     elif len(reverse_value) >= 13:
         reverse_value = float(round(value/1000000000000,2))
         return str(reverse_value)+" Trillion"
+    
+def format_for_telegram_html(raw_text):
+    # 1. Define tags that Telegram explicitly allows
+    # Reference: https://telegram.org
+    allowed_tags = ['b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 'code', 'pre', 'a']
+    
+    # 2. Convert structural web elements to newlines so the layout stays clean
+    raw_text = re.sub(r'</?(p|div|tr|h1|h2|h3|h4|h5|h6)>', '\n', raw_text, flags=re.IGNORECASE)
+    raw_text = re.sub(r'<br\s*/?>', '\n', raw_text, flags=re.IGNORECASE)
+    
+    # 3. Strip ALL tags that are NOT in Telegram's whitelist
+    # This regex catches any tag, but the lambda function leaves allowed ones untouched
+    def remove_unsupported(match):
+        tag_content = match.group(0)
+        tag_name = match.group(1).lower()
+        if tag_name in allowed_tags:
+            return tag_content  # Keep it
+        return ""  # Delete it entirely
+        
+    raw_text = re.sub(r'</?([a-zA-Z1-6]+)(?:\s+[^>]*)?>', remove_unsupported, raw_text)
+    
+    # 4. Clean up any excess whitespace left over from removed structures
+    raw_text = re.sub(r'\n{3,}', '\n\n', raw_text)
+    return raw_text.strip()
 
 def handle_follow_up(message):
     bot.send_chat_action(message.chat.id, "typing")
@@ -252,7 +290,7 @@ def handle_follow_up(message):
     messages = session["messages"]
 
     # Append user's follow-up question
-    messages.append({"role": "user", "content": user_text + "Base any stock analysis on the previously provided data for the stock. Remember, you are ALWAYS Quadrilobot."})
+    messages.append({"role": "user", "content": user_text + "Base any stock analysis on the previously provided data for the stock. Remember, you are ALWAYS Quadrilobot. Use only the HTML tags allowed by the Telegram API for text formatting (NB: Only return text with appropriate HTML tags for formatting, do not create an HTML page/document)"})
 
     try:
         bot.send_chat_action(message.chat.id, "typing")
@@ -265,15 +303,21 @@ def handle_follow_up(message):
         full_response = chat_completion.choices[0].message.content
         
         # Append assistant's reply to history
-        messages.append({"role": "assistant", "content": full_response})
+        cleaned_response = format_for_telegram_html(full_response)
+        messages.append({"role": "assistant", "content": cleaned_response})
 
-        response_chunks = split_text(full_response, max_length=4000)
+        response_chunks = split_text(cleaned_response, max_length=4000)
+        
         for i, chunk in enumerate(response_chunks):
+            # rich_chunk = types.InputRichMessage(
+            #     markdown=chunk
+            # )
+
             sent_msg = bot.send_message(
-                chat_id, 
-                chunk, 
-                disable_notification=False,
-                # reply_markup=current_markup
+            message.chat.id, 
+            chunk, 
+            disable_notification=False,
+            parse_mode="HTML"
             )
             
             # Keep listening for the next follow-up question on the final chunk
@@ -348,7 +392,8 @@ def send_analyze_data(message):
         }
 
         # Send messages in chunks
-        response_chunks = split_text(full_response, max_length=4000)
+        cleaned_response = format_for_telegram_html(full_response)
+        response_chunks = split_text(cleaned_response, max_length=4000)
 
         for i, chunk in enumerate(response_chunks):
             # Attach the markup only to the last message
